@@ -26,6 +26,9 @@ Build a platform where users upload notes, generate quizzes grounded in those no
 - [x] Phase 0: repository and service skeletons
 - [x] Phase 1: database and authentication
 - [ ] Phase 2: notes and ingestion
+  - [x] Milestone 2.1: RAG service foundation (FastAPI, Google Gen AI SDK, Gemini Embedding 2 with 768 dimensions, LangChain integration base, security middleware, structured logging)
+  - [x] Milestone 2.2: Note ingestion, document loaders (PDF/TXT/raw text), text cleaning & chunking
+  - [ ] Milestone 2.3: pgvector storage & note retrieval pipeline
 - [ ] Phase 3: quiz generation
 - [ ] Phase 4: quiz attempts and evaluation
 - [ ] Phase 5: dashboard and analytics
@@ -35,46 +38,92 @@ Build a platform where users upload notes, generate quizzes grounded in those no
 - Use JavaScript for frontend/backend; Python for AI.
 - Use FastAPI for the Python HTTP service.
 - Use one Supabase project initially.
-- Use a provider adapter so runtime LLM provider/model can be changed via configuration.
-- Keep three deployable apps in one Git monorepo.
-- Use dependency constraints in `rag/requirements.txt` (`>=`) to support modern Python runtimes (e.g. Python 3.14).
-- Support dual-mode authentication: live Supabase Auth with RLS when credentials are configured, with seamless local development fallback when credentials are not yet supplied so development and UI testing remain frictionless.
+- Selected embedding model: Google Gemini Embedding 2 (`gemini-embedding-2`) with 768 output dimensions.
+- Use the official Google Gen AI Python SDK (`google-genai`) for embedding integration.
+- Implement LangChain `Embeddings` base interface in `BaseEmbeddingProvider` for modular interoperability with LangChain document splitters, vector stores, and retrievers.
+- Private service authentication via `INTERNAL_SERVICE_TOKEN` supported through both `X-Internal-Service-Token` and `Authorization: Bearer <token>` headers.
+- Structured JSON logging with request timing and sensitive credential redaction.
+- Document loaders: PyMuPDF for PDF extraction page-by-page preserving 1-indexed page numbers; TXT loader with UTF-8 and Latin-1 fallback; raw text JSON loader.
+- Text cleaning: normalizes unprintable control characters, line-break hyphenation (`word-\nbreak`), horizontal whitespace collapsing, and 3+ newline normalization to 2.
+- Chunking strategy: LangChain `RecursiveCharacterTextSplitter` with ~1,000 tokens (4,000 characters) and 150 token overlap (600 characters) using hierarchical separators.
+- Chunk metadata preservation: `chunk_index`, `page_number`, `source_type`, `note_id`, `user_id`, `source_filename`, `char_count`, `token_count_estimate`.
+- Preview endpoints: `POST /internal/ingestion/preview` (multipart file up to 20MB) and `POST /internal/ingestion/preview-text` (raw JSON text). Chunks are previewed without database persistence.
 
 ## Latest work
 - Date: 2026-11-01
-- Summary: Completed Phase 1 implementation (Database & Authentication).
-  - Database: Created `database/migrations/001_create_profiles.sql` defining `profiles` table, RLS policies, automatic trigger on `auth.users`, and `updated_at` trigger. Updated `database/README.md` with setup instructions.
-  - Backend: Installed `@supabase/supabase-js` and `zod`. Implemented centralized Supabase service, `requireAuth` JWT middleware, request validation middleware (`validate`), `GET /api/v1/auth/me`, `GET /api/v1/profiles/me`, and `PATCH /api/v1/profiles/me`. Enforced strict body validation disallowing user_id overrides.
-  - Frontend: Installed `@supabase/supabase-js` and `@supabase/ssr`. Created reusable browser and server Supabase clients with safe static build fallbacks. Built `AuthContext` supporting signup, login, logout, and session persistence. Built `/login`, `/signup`, `/dashboard` (protected route with profile editing and signout), and updated `/` landing page with dynamic auth navigation.
-  - Environment: Created `frontend/.env.local` and `backend/.env` with safe templates.
-  - Testing & Security: Implemented 12 automated test cases covering authentication, token verification, unauthorized access, input validation, strict user_id blocking, and cross-user data isolation.
+- Summary: Completed Phase 2, Milestone 2.2 (Document Ingestion and Chunking).
+  - Dependencies: Added `pymupdf>=1.24.0`, `python-multipart>=0.0.9`, and `langchain-text-splitters>=1.0.0` to `rag/requirements.txt` and verified installation in `.venv`.
+  - Document Loaders (`rag/app/ingestion/loaders.py`):
+    - PDF extraction with PyMuPDF, preserving 1-indexed page numbers, detecting scanned/empty PDFs, and rejecting password-protected/corrupted files.
+    - TXT extraction with UTF-8 decoding and Latin-1 fallback for legacy encodings.
+    - Raw text extraction supporting optional note titles.
+  - Text Cleaning (`rag/app/ingestion/cleaner.py`):
+    - Control character sanitization, line-break hyphenation reconciliation, horizontal whitespace collapsing, and paragraph break normalization (3+ newlines -> 2).
+  - Text Chunking (`rag/app/ingestion/chunker.py`):
+    - Configured LangChain `RecursiveCharacterTextSplitter` with 4,000 char window (~1,000 tokens) and 600 char overlap (~150 tokens).
+    - Sequential chunk indexing and complete provenance metadata attachment.
+  - Ingestion Pipeline & Schemas (`rag/app/ingestion/pipeline.py`, `rag/app/schemas/ingestion.py`):
+    - Modular preview functions for files and raw text.
+    - Pydantic schemas: `ChunkItem`, `DocumentMetadata`, `IngestionPreviewResponse`, `RawTextIngestionRequest`.
+  - API Endpoints (`rag/app/api/ingestion.py`):
+    - `POST /internal/ingestion/preview`: Multipart upload for `.pdf` and `.txt` files up to 20MB, validates IDs, requires `INTERNAL_SERVICE_TOKEN`.
+    - `POST /internal/ingestion/preview-text`: JSON payload for raw text, validates non-empty fields, requires `INTERNAL_SERVICE_TOKEN`.
+  - Exception Handling (`rag/app/core/exceptions.py`):
+    - Added `UnsupportedMediaTypeException` (415), `PayloadTooLargeException` (413), `EmptyDocumentException` (400), `CorruptedDocumentException` (400), `DocumentExtractionException` (422).
+  - Testing (`rag/tests/test_ingestion.py`):
+    - Unit and integration tests covering TXT loader, multi-page PDF loader, raw text loader, empty/whitespace handling, corrupted files, unsupported file extensions, chunk overlap detection, metadata preservation, and unauthorized request rejection.
 - Files created/modified:
-  - `database/migrations/001_create_profiles.sql`, `database/README.md`
-  - `backend/`: `src/services/supabase.js`, `src/middleware/auth.js`, `src/middleware/validate.js`, `src/modules/auth/*`, `src/modules/profiles/*`, `src/routes/index.js`, `src/app.js`, `tests/auth_and_profiles.test.js`, `package.json`, `.env`
-  - `frontend/`: `lib/supabase/client.js`, `lib/supabase/server.js`, `features/auth/AuthContext.js`, `app/layout.js`, `app/page.js`, `app/login/page.js`, `app/signup/page.js`, `app/dashboard/page.js`, `.env.local`
-  - Root: `docs/PROJECT_CONTEXT.md`
+  - `rag/requirements.txt`
+  - `rag/app/core/exceptions.py`
+  - `rag/app/ingestion/__init__.py`
+  - `rag/app/ingestion/cleaner.py`
+  - `rag/app/ingestion/loaders.py`
+  - `rag/app/ingestion/chunker.py`
+  - `rag/app/ingestion/pipeline.py`
+  - `rag/app/schemas/ingestion.py`
+  - `rag/app/api/ingestion.py`
+  - `rag/app/main.py`
+  - `rag/tests/test_ingestion.py`
+  - `rag/README.md`
+  - `docs/PROJECT_CONTEXT.md`
 - Tests run & exact results:
-  - Backend test suite: `npm --prefix backend test` -> 12 passing tests, 0 failures (duration: 932ms):
-    - `GET /api/v1/health returns 200 OK`
-    - `Accessing protected route GET /api/v1/auth/me without token returns 401 UNAUTHORIZED`
-    - `Accessing protected route GET /api/v1/auth/me with malformed Authorization header returns 401`
-    - `Accessing protected route GET /api/v1/profiles/me without token returns 401 UNAUTHORIZED`
-    - `Accessing protected route PATCH /api/v1/profiles/me without token returns 401 UNAUTHORIZED`
-    - `Accessing protected route with an invalid or expired JWT token returns 401 UNAUTHORIZED`
-    - `Validation: updateProfileSchema rejects missing or empty display_name`
-    - `Security: updateProfileSchema strictly blocks user_id injection in request body`
-    - `Security & Controller: getMe returns only claims derived from verified token`
-    - `Security & Data Isolation: getProfile queries only user_id from verified token`
-    - `Security & Data Isolation: User A cannot update User B profile`
-    - `Security: Response never exposes service-role keys or privileged credentials`
-  - Frontend production build: `npm --prefix frontend run build` -> Compiled successfully in 72s (all 7 routes statically prerendered with 0 errors).
+  - Pytest suite: `pytest tests -v` -> 29 passed in 6.77s:
+    - `tests/test_config.py::test_settings_default_values PASSED`
+    - `tests/test_config.py::test_settings_custom_values PASSED`
+    - `tests/test_health.py::test_internal_health_endpoint PASSED`
+    - `tests/test_ingestion.py::test_clean_text_normalizes_whitespace_and_hyphenation PASSED`
+    - `tests/test_ingestion.py::test_clean_text_strips_control_characters PASSED`
+    - `tests/test_ingestion.py::test_txt_loader_success PASSED`
+    - `tests/test_ingestion.py::test_txt_loader_empty PASSED`
+    - `tests/test_ingestion.py::test_pdf_loader_multi_page PASSED`
+    - `tests/test_ingestion.py::test_pdf_loader_empty_or_corrupted PASSED`
+    - `tests/test_ingestion.py::test_raw_text_loader PASSED`
+    - `tests/test_ingestion.py::test_chunk_document_pages_metadata_preservation PASSED`
+    - `tests/test_ingestion.py::test_chunk_overlap_detection PASSED`
+    - `tests/test_ingestion.py::test_preview_txt_upload_endpoint PASSED`
+    - `tests/test_ingestion.py::test_preview_pdf_upload_endpoint PASSED`
+    - `tests/test_ingestion.py::test_preview_endpoint_unsupported_file_extension PASSED`
+    - `tests/test_ingestion.py::test_preview_endpoint_empty_file PASSED`
+    - `tests/test_ingestion.py::test_preview_endpoint_corrupted_pdf PASSED`
+    - `tests/test_ingestion.py::test_preview_endpoint_unauthorized PASSED`
+    - `tests/test_ingestion.py::test_preview_raw_text_endpoint PASSED`
+    - `tests/test_ingestion.py::test_preview_raw_text_empty_content PASSED`
+    - `tests/test_ingestion.py::test_preview_raw_text_unauthorized PASSED`
+    - `tests/test_provider.py::test_gemini_provider_properties PASSED`
+    - `tests/test_provider.py::test_gemini_provider_missing_api_key PASSED`
+    - `tests/test_provider.py::test_provider_factory_google PASSED`
+    - `tests/test_provider.py::test_provider_factory_unsupported PASSED`
+    - `tests/test_security.py::test_protected_route_without_token PASSED`
+    - `tests/test_security.py::test_protected_route_with_invalid_token PASSED`
+    - `tests/test_security.py::test_protected_route_with_valid_x_header PASSED`
+    - `tests/test_security.py::test_protected_route_with_valid_bearer_token PASSED`
 
 ## Blockers / open decisions
-- Provide real Supabase project URL and anon key in `frontend/.env.local` and `backend/.env` for live cloud database synchronization.
-- Choose embedding provider/model and confirm vector dimension before creating pgvector schema in Phase 2.
+- None. Ready for Milestone 2.3.
 
 ## Next task
-Wait for user approval before starting Phase 2 (Notes and Ingestion pipeline).
+Milestone 2.3: Embedding generation & pgvector vector storage for chunks, combined with Supabase database schema and ownership-enforced vector retrieval.
+Awaiting user approval before proceeding to Milestone 2.2 (Notes ingestion and text chunking).
 
 ## Handoff instructions
 Before changing code, inspect the actual repository and relevant docs. Update this file after each meaningful task. Record actual commands and test outcomes; do not infer success.
